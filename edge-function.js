@@ -38,36 +38,63 @@ const errorRes = (template, status = 400, msg = '') => new Response(
  * @param {string|undefined} systemPrompt - 系统消息内容
  * @returns {{source_language?: string, target_language: string}}
  */
-function parseTranslationOptions(systemPrompt) {
-    const options = { target_language: CONFIG.DEFAULT_TARGET_LANGUAGE };
-    if (!systemPrompt) return options;
-
-    try {
-        // 优先尝试解析为 JSON
-        const jsonOptions = JSON.parse(systemPrompt);
-        if (jsonOptions.source_language) {
-            const convertedSource = getLanguageCode(jsonOptions.source_language);
-            if (convertedSource) options.source_language = convertedSource;
-        }
-        if (jsonOptions.target_language) {
-            const convertedTarget = getLanguageCode(jsonOptions.target_language);
-            if (convertedTarget) options.target_language = convertedTarget;
-        }
-        return options;
-    } catch (e) {
-        // 如果不是 JSON，尝试用正则表达式解析 key:value 格式
-        const sourceLangMatch = systemPrompt.match(/source_language\s*:\s*['"]?([^'"]+)['"]?/);
-        const targetLangMatch = systemPrompt.match(/target_language\s*:\s*['"]?([^'"]+)['"]?/);
-        if (sourceLangMatch?.[1]) {
-            const convertedSource = getLanguageCode(sourceLangMatch[1]);
-            if (convertedSource) options.source_language = convertedSource;
-        }
-        if (targetLangMatch?.[1]) {
-            const convertedTarget = getLanguageCode(targetLangMatch[1]);
-            if (convertedTarget) options.target_language = convertedTarget;
+function parseTranslationOptions(systemPrompt, userContent) {
+    const options = {};
+    
+    if (systemPrompt) {
+        try {
+            // 优先尝试解析为 JSON
+            const jsonOptions = JSON.parse(systemPrompt);
+            if (jsonOptions.source_language) {
+                const convertedSource = getLanguageCode(jsonOptions.source_language);
+                if (convertedSource) options.source_language = convertedSource;
+            }
+            if (jsonOptions.target_language) {
+                const convertedTarget = getLanguageCode(jsonOptions.target_language);
+                if (convertedTarget) options.target_language = convertedTarget;
+            }
+        } catch (e) {
+            // 如果不是 JSON，尝试用正则表达式解析 key:value 格式
+            const sourceLangMatch = systemPrompt.match(/source_language\s*:\s*['"]?([^'"]+)['"]?/);
+            const targetLangMatch = systemPrompt.match(/target_language\s*:\s*['"]?([^'"]+)['"]?/);
+            if (sourceLangMatch?.[1]) {
+                const convertedSource = getLanguageCode(sourceLangMatch[1]);
+                if (convertedSource) options.source_language = convertedSource;
+            }
+            if (targetLangMatch?.[1]) {
+                const convertedTarget = getLanguageCode(targetLangMatch[1]);
+                if (convertedTarget) options.target_language = convertedTarget;
+            }
         }
     }
+
+    // 如果未指定目标语言，则根据用户输入内容自动检测
+    if (!options.target_language) {
+        options.target_language = detectDefaultTargetLanguage(userContent);
+    }
+
     return options;
+}
+
+function detectDefaultTargetLanguage(text) {
+    if (!text || typeof text !== 'string') return CONFIG.DEFAULT_TARGET_LANGUAGE;
+
+    let cnCount = 0;
+    let enCount = 0;
+
+    for (let i = 0; i < text.length; i++) {
+        const charCode = text.charCodeAt(i);
+        // 基本汉字范围 (CJK Unified Ideographs)
+        if (charCode >= 0x4E00 && charCode <= 0x9FA5) {
+            cnCount++;
+        } else if ((charCode >= 65 && charCode <= 90) || (charCode >= 97 && charCode <= 122)) {
+            enCount++;
+        }
+    }
+
+    // 只有当中文字符数量严格大于英文字符数量时，才默认为英语目标
+    // 否则（全英文、混合且英文多、无法判断）均默认为中文目标
+    return cnCount > enCount ? 'en' : CONFIG.DEFAULT_TARGET_LANGUAGE;
 }
 
 function parseStreamFlag(streamValue) {
@@ -318,7 +345,7 @@ async function handleChatCompletionsRequest({ data, auth }) {
     if (!modelId) return errorRes('noModel');
 
     const systemPrompt = data.messages?.find?.(m => m?.role === "system")?.content;
-    const translationOptions = parseTranslationOptions(systemPrompt);
+    const translationOptions = parseTranslationOptions(systemPrompt, userMsgContent);
     mergeTranslationOverrides(translationOptions, data.translation_options, data.metadata);
     const isStream = parseStreamFlag(data.stream);
 
@@ -341,7 +368,7 @@ async function handleResponsesRequest({ data, auth }) {
     const { systemPrompt, userContent } = parseResponsesInput(data.input);
     if (!userContent) return errorRes('noMessage');
 
-    const translationOptions = parseTranslationOptions(systemPrompt);
+    const translationOptions = parseTranslationOptions(systemPrompt, userContent);
     mergeTranslationOverrides(translationOptions, data.translation_options, data.metadata);
     const isStream = parseStreamFlag(data.stream);
 

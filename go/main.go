@@ -16,7 +16,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
+
 
 type config struct {
 	DoubaoBaseURL         string
@@ -222,7 +224,7 @@ func (s *server) handleChatCompletions(w http.ResponseWriter, body []byte, auth 
 		}
 	}
 
-	translationOptions := parseTranslationOptions(systemPrompt)
+	translationOptions := parseTranslationOptions(systemPrompt, stringifyUserContent(userContent))
 	mergeTranslationOverrides(&translationOptions, req.TranslationOptions, req.Metadata)
 	isStream := parseStreamFlag(req.Stream)
 
@@ -310,7 +312,7 @@ func (s *server) handleResponses(w http.ResponseWriter, body []byte, auth string
 		return
 	}
 
-	translationOptions := parseTranslationOptions(systemPrompt)
+	translationOptions := parseTranslationOptions(systemPrompt, stringifyUserContent(userContent))
 	mergeTranslationOverrides(&translationOptions, req.TranslationOptions, req.Metadata)
 	isStream := parseStreamFlag(req.Stream)
 
@@ -562,20 +564,42 @@ func extractTextFromContent(content interface{}) string {
 	return ""
 }
 
-func parseTranslationOptions(systemPrompt string) translationOptions {
-	options := translationOptions{TargetLanguage: CONFIG.DefaultTargetLanguage}
-	if systemPrompt == "" {
-		return options
+func parseTranslationOptions(systemPrompt string, userContent string) translationOptions {
+	options := translationOptions{}
+
+	if systemPrompt != "" {
+		if parsed, err := parseTranslationJSON(systemPrompt); err == nil {
+			applyLanguageOption(&options, parsed)
+		} else {
+			applyLanguageOption(&options, parseTranslationKV(systemPrompt))
+		}
 	}
 
-	if parsed, err := parseTranslationJSON(systemPrompt); err == nil {
-		applyLanguageOption(&options, parsed)
-		return options
+	if options.TargetLanguage == "" {
+		options.TargetLanguage = detectDefaultTargetLanguage(userContent)
 	}
 
-	applyLanguageOption(&options, parseTranslationKV(systemPrompt))
 	return options
 }
+
+func detectDefaultTargetLanguage(text string) string {
+	cnCount := 0
+	enCount := 0
+
+	for _, r := range text {
+		if unicode.Is(unicode.Han, r) {
+			cnCount++
+		} else if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+			enCount++
+		}
+	}
+
+	if cnCount > enCount {
+		return "en"
+	}
+	return CONFIG.DefaultTargetLanguage
+}
+
 
 func parseTranslationJSON(input string) (map[string]string, error) {
 	var parsed map[string]interface{}
